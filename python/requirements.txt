@@ -1,0 +1,9 @@
+trino
+sqlalchemy
+duckdb
+pandas
+numpy
+scipy
+matplotlib
+requests
+huggingface_hub
