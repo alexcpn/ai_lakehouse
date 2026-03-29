@@ -1,1 +1,3 @@
 faers_data/*
+python/__pycache__/*
+*.parquet
