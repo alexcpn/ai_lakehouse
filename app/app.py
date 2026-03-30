@@ -730,13 +730,11 @@ def main():
                 "Uncheck products to exclude them from the analysis."
             )
 
-            # Initialize checkbox state — only exact matches selected by default
+            # Initialize checkbox state — all selected by default so users can deselect
             search_upper = drug_name_display.strip().upper()
             if 'product_checked' not in st.session_state or \
                st.session_state.get('product_checked_drug') != search_upper:
-                st.session_state['product_checked'] = {
-                    name: (name == search_upper) for name in product_names
-                }
+                st.session_state['product_checked'] = {name: True for name in product_names}
                 st.session_state['product_checked_drug'] = search_upper
 
             # Select All / Deselect All buttons
