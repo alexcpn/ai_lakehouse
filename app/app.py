@@ -654,7 +654,7 @@ def main():
     # ==========================================
     with tab1:
         drug_input = st.text_input(
-            "Enter drug name (brand or generic):",
+            "Enter a SINGLE drug name (brand or generic):",
             placeholder="e.g., valbenazine, ibuprofen, INGREZZA",
             key="single_drug"
         )
