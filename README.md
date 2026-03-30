@@ -1,4 +1,4 @@
-# Complex Data Analysis with Agentic AI: A Case Study in Pharmacovigilance with FDA's FAERS data
+# A Data Analysis Pattern using Agentic AI: A Case Study in Pharmacovigilance with FDA's FAERS data
 
 *How a Data Lakehouse architecture and an AI coding agent turned months of specialized work into a free, live tool for drug safety research.*
 
