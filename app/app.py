@@ -134,16 +134,50 @@ def get_connection():
     return conn, available
 
 
+def _safe_scalar(conn, sql, default=0):
+    """Execute a scalar query, returning default if the connection or dataset is unavailable.
+
+    Raises ConnectionError with a user-friendly message when the query fails,
+    so callers can display it via st.error().
+    """
+    try:
+        result = conn.execute(sql).fetchone()
+    except duckdb.IOException as e:
+        raise ConnectionError(
+            "Could not reach the remote dataset. The data source may be temporarily "
+            "unavailable — please try again in a few moments."
+        ) from e
+    except duckdb.CatalogException as e:
+        raise ConnectionError(
+            "The dataset has not finished loading yet. Please refresh the page and try again."
+        ) from e
+    except Exception as e:
+        raise ConnectionError(
+            f"Unexpected database error: {e}. Please refresh the page to reconnect."
+        ) from e
+    if result is None:
+        raise ConnectionError(
+            "The dataset is still loading or the connection was lost. "
+            "Please refresh the page and try again."
+        )
+    return result[0] if result[0] is not None else default
+
+
 @st.cache_data
 def get_dataset_stats(_conn):
     """Get basic dataset statistics. Cached."""
-    row = _conn.execute("""
-        SELECT
-            (SELECT COUNT(*) FROM demo) as unique_cases,
-            (SELECT COUNT(*) FROM demo_raw) as total_reports,
-            (SELECT COUNT(DISTINCT UPPER(COALESCE(NULLIF(TRIM(prod_ai),''), drugname)))
-             FROM drug WHERE role_cod = 'PS') as unique_drugs
-    """).fetchone()
+    try:
+        row = _conn.execute("""
+            SELECT
+                (SELECT COUNT(*) FROM demo) as unique_cases,
+                (SELECT COUNT(*) FROM demo_raw) as total_reports,
+                (SELECT COUNT(DISTINCT UPPER(COALESCE(NULLIF(TRIM(prod_ai),''), drugname)))
+                 FROM drug WHERE role_cod = 'PS') as unique_drugs
+        """).fetchone()
+    except Exception:
+        return {'unique_cases': 0, 'total_reports': 0, 'unique_drugs': 0}
+    if row is None:
+        return {'unique_cases': 0, 'total_reports': 0, 'unique_drugs': 0}
     return {
         'unique_cases': row[0],
         'total_reports': row[1],
@@ -160,12 +194,12 @@ def compute_drug_signals(conn, drug_filter_sql, min_cases=3):
     e.g., "UPPER(drugname) LIKE '%VALBENAZINE%' OR UPPER(prod_ai) LIKE '%VALBENAZINE%'"
     """
     # Pre-compute scalars to avoid CTE cross-join issues
-    N = conn.execute("SELECT COUNT(DISTINCT primaryid) FROM drug_ae").fetchone()[0]
-    dt = conn.execute(f"""
+    N = _safe_scalar(conn, "SELECT COUNT(DISTINCT primaryid) FROM drug_ae")
+    dt = _safe_scalar(conn, f"""
         SELECT COUNT(DISTINCT primaryid) FROM drug_ae WHERE {drug_filter_sql}
-    """).fetchone()[0]
+    """)
 
-    if dt == 0:
+    if N == 0 or dt == 0:
         return pd.DataFrame()
 
     query = f"""
@@ -595,6 +629,12 @@ def main():
     conn, available_tables = get_connection()
     dataset_stats = get_dataset_stats(conn)
 
+    if dataset_stats['unique_cases'] == 0:
+        st.warning(
+            "The dataset is still loading or could not be reached. "
+            "This may take a moment on first load — please refresh the page shortly."
+        )
+
     # AI configuration in sidebar
     ai_provider, ai_client = get_ai_config()
 
@@ -628,18 +668,26 @@ def main():
         # Run analysis and store in session_state
         if drug_input and st.button("Analyze", key="btn_single"):
             drug_filter = build_drug_filter(drug_input)
-            count = conn.execute(f"""
-                SELECT COUNT(DISTINCT primaryid) FROM drug_ae WHERE {drug_filter}
-            """).fetchone()[0]
+            try:
+                count = _safe_scalar(conn, f"""
+                    SELECT COUNT(DISTINCT primaryid) FROM drug_ae WHERE {drug_filter}
+                """)
+            except ConnectionError as e:
+                st.error(str(e))
+                st.stop()
 
             if count == 0:
                 st.session_state['single_results'] = None
                 st.error(f"No reports found for '{drug_input}'. Try a different spelling or the generic name.")
             else:
-                with st.spinner("Computing disproportionality analysis..."):
-                    signals = compute_drug_signals(conn, drug_filter, min_cases=min_cases)
-                    demo_data = get_drug_demographics(conn, drug_filter)
-                    outcomes = get_drug_outcomes(conn, drug_filter)
+                try:
+                    with st.spinner("Computing disproportionality analysis..."):
+                        signals = compute_drug_signals(conn, drug_filter, min_cases=min_cases)
+                        demo_data = get_drug_demographics(conn, drug_filter)
+                        outcomes = get_drug_outcomes(conn, drug_filter)
+                except ConnectionError as e:
+                    st.error(str(e))
+                    st.stop()
                 st.session_state['single_results'] = {
                     'drug_name': drug_input,
                     'drug_filter': drug_filter,
@@ -817,19 +865,23 @@ def main():
                 comparison_data = {}
                 report_counts = {}
 
-                progress = st.progress(0)
-                for i, drug in enumerate(drug_names):
-                    drug_filter = build_drug_filter(drug)
-                    cnt = conn.execute(f"""
-                        SELECT COUNT(DISTINCT primaryid) FROM drug_ae WHERE {drug_filter}
-                    """).fetchone()[0]
-                    report_counts[drug] = cnt
-                    if cnt > 0:
-                        comparison_data[drug] = compute_drug_signals(conn, drug_filter, min_cases=min_cases_class)
-                    else:
-                        comparison_data[drug] = pd.DataFrame()
-                    progress.progress((i + 1) / len(drug_names))
-                progress.empty()
+                try:
+                    progress = st.progress(0)
+                    for i, drug in enumerate(drug_names):
+                        drug_filter = build_drug_filter(drug)
+                        cnt = _safe_scalar(conn, f"""
+                            SELECT COUNT(DISTINCT primaryid) FROM drug_ae WHERE {drug_filter}
+                        """)
+                        report_counts[drug] = cnt
+                        if cnt > 0:
+                            comparison_data[drug] = compute_drug_signals(conn, drug_filter, min_cases=min_cases_class)
+                        else:
+                            comparison_data[drug] = pd.DataFrame()
+                        progress.progress((i + 1) / len(drug_names))
+                    progress.empty()
+                except ConnectionError as e:
+                    st.error(str(e))
+                    st.stop()
 
                 # Demographics
                 demo_rows = []
