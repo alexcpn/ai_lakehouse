@@ -406,6 +406,26 @@ def get_ai_config():
     return None, None
 
 
+def render_sidebar_about():
+    """Render About / Contributing / Bug Reporting section in sidebar."""
+    with st.sidebar:
+        st.divider()
+        st.markdown("### About")
+        st.markdown(
+            "This is a **free and open-source** pharmacovigilance tool "
+            "licensed under [Apache 2.0](https://github.com/alexcpn/ai_lakehouse/blob/main/LICENSE)."
+        )
+        st.markdown(
+            "Domain experts — pharmacovigilance scientists, clinicians, "
+            "pharmacologists, and researchers — are welcome to contribute, "
+            "suggest improvements, or adapt this tool for their own use."
+        )
+        st.markdown(
+            "[GitHub Repository](https://github.com/alexcpn/ai_lakehouse) | "
+            "[Report a Bug](https://github.com/alexcpn/ai_lakehouse/issues)"
+        )
+
+
 def build_report_prompt(drug_name, signals_df, demographics_df, outcomes_df, dataset_stats, report_count):
     """Build the user prompt with all statistical data for the LLM."""
     # Top signals
@@ -652,8 +672,9 @@ def main():
             "This may take a moment on first load — please refresh the page shortly."
         )
 
-    # AI configuration in sidebar
+    # Sidebar
     ai_provider, ai_client = get_ai_config()
+    render_sidebar_about()
 
     st.markdown(
         f"**Dataset:** {dataset_stats['unique_cases']:,} unique cases | "
@@ -730,11 +751,13 @@ def main():
                 "Uncheck products to exclude them from the analysis."
             )
 
-            # Initialize checkbox state — all selected by default so users can deselect
+            # Initialize checkbox state — only exact matches selected by default
             search_upper = drug_name_display.strip().upper()
             if 'product_checked' not in st.session_state or \
                st.session_state.get('product_checked_drug') != search_upper:
-                st.session_state['product_checked'] = {name: True for name in product_names}
+                st.session_state['product_checked'] = {
+                    name: (name == search_upper) for name in product_names
+                }
                 st.session_state['product_checked_drug'] = search_upper
 
             # Select All / Deselect All buttons
