@@ -344,6 +344,13 @@ def build_drug_filter(drug_name):
     return f"(UPPER(drugname) LIKE '%{safe}%' OR UPPER(COALESCE(prod_ai,'')) LIKE '%{safe}%')"
 
 
+def build_product_filter(product_names):
+    """Build SQL WHERE clause matching exact product names."""
+    escaped = [p.replace("'", "''") for p in product_names]
+    in_list = ", ".join(f"'{p}'" for p in escaped)
+    return f"UPPER(COALESCE(NULLIF(TRIM(prod_ai), ''), drugname)) IN ({in_list})"
+
+
 # --- AI Report Generation ---
 
 REPORT_SYSTEM_PROMPT = """You are a pharmacovigilance scientist writing a safety signal report based on FDA FAERS
@@ -544,10 +551,13 @@ def generate_ai_report(provider, client, user_prompt):
 
 def render_disclaimer():
     st.warning(
-        "**Disclaimer:** FAERS is a voluntary reporting system. Report counts do not reflect "
-        "true incidence rates. Disproportionality signals (PRR/ROR) indicate statistical "
-        "associations, **not causation**. Results require validation by clinical experts "
-        "and should not be used for direct clinical decision-making.",
+        "**For qualified healthcare and research professionals only.** "
+        "This tool is intended for pharmacovigilance professionals, researchers, and "
+        "clinicians experienced in interpreting disproportionality analysis. "
+        "FAERS is a voluntary reporting system — report counts do not reflect "
+        "true incidence rates. Signals (PRR/ROR) indicate statistical "
+        "associations, **not causation**. Results require expert interpretation "
+        "and must not be used for direct clinical decision-making or prescribing.",
         icon="\u26a0\ufe0f"
     )
 
@@ -672,40 +682,134 @@ def main():
         with col2:
             pass
 
-        # Run analysis and store in session_state
-        if drug_input and st.button("Analyze", key="btn_single"):
+        # Phase 1: Search for matching products
+        if drug_input and st.button("Search", key="btn_single"):
             drug_filter = build_drug_filter(drug_input)
             try:
-                count = _safe_scalar(conn, f"""
-                    SELECT COUNT(DISTINCT primaryid) FROM drug_ae WHERE {drug_filter}
-                """)
+                matched_products = conn.execute(f"""
+                    SELECT
+                        UPPER(COALESCE(NULLIF(TRIM(prod_ai), ''), drugname)) as product_name,
+                        COUNT(DISTINCT primaryid) as report_count
+                    FROM drug_ae
+                    WHERE {drug_filter}
+                    GROUP BY 1
+                    ORDER BY 2 DESC
+                    LIMIT 50
+                """).fetchdf()
             except ConnectionError as e:
                 st.error(str(e))
                 st.stop()
 
-            if count == 0:
+            if matched_products.empty:
+                st.session_state['matched_products'] = None
                 st.session_state['single_results'] = None
-                st.error(f"No reports found for '{drug_input}'. Try a different spelling or the generic name.")
+                st.error(
+                    f"No reports found for '{drug_input}'. Try a different spelling or the "
+                    f"generic name — e.g., instead of Paracetamol use ACETAMINOPHEN. "
+                    f"FAERS uses US drug names (USAN/FDA labeling)."
+                )
             else:
+                st.session_state['matched_products'] = {
+                    'drug_name': drug_input,
+                    'products': matched_products,
+                }
+                st.session_state['single_results'] = None
+
+        # Phase 2: Display matched products and let user select
+        matched = st.session_state.get('matched_products')
+        if matched is not None:
+            products_df = matched['products']
+            drug_name_display = matched['drug_name']
+            product_names = products_df['product_name'].tolist()
+            report_counts_list = products_df['report_count'].tolist()
+
+            st.markdown(f"**Found {len(product_names)} product names matching '{drug_name_display}'.**")
+            st.caption(
+                "FAERS uses substring matching — this may include combination products "
+                "(e.g., 'ACETAMINOPHEN' also matches 'HYDROCODONE/ACETAMINOPHEN'). "
+                "Uncheck products to exclude them from the analysis."
+            )
+
+            # Initialize checkbox state — only exact matches selected by default
+            search_upper = drug_name_display.strip().upper()
+            if 'product_checked' not in st.session_state or \
+               st.session_state.get('product_checked_drug') != search_upper:
+                st.session_state['product_checked'] = {
+                    name: (name == search_upper) for name in product_names
+                }
+                st.session_state['product_checked_drug'] = search_upper
+
+            # Select All / Deselect All buttons
+            btn_col1, btn_col2, _ = st.columns([1, 1, 4])
+            with btn_col1:
+                if st.button("Select All", key="btn_select_all"):
+                    for name in product_names:
+                        st.session_state['product_checked'][name] = True
+                    st.rerun()
+            with btn_col2:
+                if st.button("Deselect All", key="btn_deselect_all"):
+                    for name in product_names:
+                        st.session_state['product_checked'][name] = False
+                    st.rerun()
+
+            # Render checkbox table
+            col_check, col_name, col_reports = st.columns([0.5, 4, 1.5])
+            with col_check:
+                st.markdown("**Include**")
+            with col_name:
+                st.markdown("**Product Name**")
+            with col_reports:
+                st.markdown("**Reports**")
+
+            for name, count in zip(product_names, report_counts_list):
+                col_check, col_name, col_reports = st.columns([0.5, 4, 1.5])
+                with col_check:
+                    st.session_state['product_checked'][name] = st.checkbox(
+                        name, value=st.session_state['product_checked'].get(name, True),
+                        key=f"chk_{name}", label_visibility="collapsed",
+                    )
+                with col_name:
+                    st.text(name)
+                with col_reports:
+                    st.text(f"{count:,}")
+
+            selected_products = [
+                name for name in product_names
+                if st.session_state['product_checked'].get(name, True)
+            ]
+            selected_count = sum(
+                c for name, c in zip(product_names, report_counts_list)
+                if st.session_state['product_checked'].get(name, True)
+            )
+
+            st.markdown(f"**{len(selected_products)}** of {len(product_names)} products selected "
+                        f"— **{selected_count:,}** total reports")
+
+            if selected_products and st.button("Run Signal Analysis", key="btn_run_analysis"):
+                analysis_filter = build_product_filter(selected_products)
                 try:
+                    count = _safe_scalar(conn, f"""
+                        SELECT COUNT(DISTINCT primaryid) FROM drug_ae WHERE {analysis_filter}
+                    """)
                     with st.spinner("Computing disproportionality analysis..."):
-                        signals = compute_drug_signals(conn, drug_filter, min_cases=min_cases)
-                        demo_data = get_drug_demographics(conn, drug_filter)
-                        outcomes = get_drug_outcomes(conn, drug_filter)
+                        signals = compute_drug_signals(conn, analysis_filter, min_cases=min_cases)
+                        demo_data = get_drug_demographics(conn, analysis_filter)
+                        outcomes = get_drug_outcomes(conn, analysis_filter)
                 except ConnectionError as e:
                     st.error(str(e))
                     st.stop()
                 st.session_state['single_results'] = {
-                    'drug_name': drug_input,
-                    'drug_filter': drug_filter,
+                    'drug_name': drug_name_display,
+                    'drug_filter': analysis_filter,
                     'count': count,
                     'signals': signals,
                     'demo_data': demo_data,
                     'outcomes': outcomes,
+                    'selected_products': selected_products,
                     'min_cases': min_cases,
                 }
 
-        # Display results from session_state
+        # Display analysis results
         results = st.session_state.get('single_results')
         if results is not None:
             drug_name_display = results['drug_name']
@@ -714,8 +818,10 @@ def main():
             demo_data = results['demo_data']
             outcomes = results['outcomes']
             min_cases_used = results['min_cases']
+            selected_products = results.get('selected_products', [])
 
-            st.success(f"Found **{count:,}** adverse event reports for '{drug_name_display}'")
+            st.success(f"Analyzing **{count:,}** reports for '{drug_name_display}' "
+                       f"({len(selected_products)} product{'s' if len(selected_products) != 1 else ''} selected)")
 
             # Drug profile
             st.subheader("Drug Profile")
@@ -754,37 +860,13 @@ def main():
                 display_df = signals[display_cols].copy()
                 display_df.columns = ['Adverse Event', 'Cases', 'PRR', 'PRR Lower CI', 'PRR Upper CI',
                                       'ROR', 'Chi-squared', 'P-value', 'Signal']
+                display_df['CI Width'] = display_df['PRR Upper CI'] - display_df['PRR Lower CI']
                 display_df = display_df.sort_values(by='PRR', ascending=False)
 
-                # --- PRR Bar Chart (top adverse events) ---
-                st.markdown("#### Top Adverse Events by PRR")
-                chart_df = display_df.head(20).copy()
-                fig, ax = plt.subplots(figsize=(8, max(3, len(chart_df) * 0.3)))
-                bar_colors = ['#d32f2f' if s else '#757575' for s in chart_df['Signal']]
-                y_pos = range(len(chart_df))
-                ax.barh(y_pos, chart_df['PRR'], color=bar_colors)
-                ax.set_yticks(y_pos)
-                ax.set_yticklabels(chart_df['Adverse Event'].str[:35], fontsize=8)
-                ax.invert_yaxis()
-                ax.set_xlabel('PRR')
-                ax.axvline(x=2, color='blue', linestyle='--', linewidth=0.8, alpha=0.6, label='PRR=2 threshold')
-                ax.legend(fontsize=7)
-                for i, (prr, n) in enumerate(zip(chart_df['PRR'], chart_df['Cases'])):
-                    ax.text(prr + 0.1, i, f'n={int(n)}', va='center', fontsize=7, color='#333333')
-                ax.set_title(f'Signal Detection: {drug_name_display}', fontsize=10)
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
-
-                # --- Volcano plot ---
-                if len(signals) > 10:
-                    with st.expander("Volcano Plot", expanded=False):
-                        fig = render_volcano_plot(signals, title=f"Signal Detection: {drug_name_display}")
-                        st.pyplot(fig)
-                        plt.close(fig)
-
-                # --- Signal Table ---
+                # --- Signal Table (shown first, full height) ---
                 st.markdown("#### Full Signal Table")
+                st.caption("Sorted by PRR descending — strongest signals at top. "
+                           "Wide CI = low confidence (few cases). Click column headers to re-sort.")
                 styled = display_df.style.apply(
                     lambda row: [
                         'background-color: #ffe0e0; color: #000000'
@@ -796,9 +878,37 @@ def main():
                 ).format({
                     'PRR': '{:.2f}', 'PRR Lower CI': '{:.2f}', 'PRR Upper CI': '{:.2f}',
                     'ROR': '{:.2f}', 'Chi-squared': '{:.2f}', 'P-value': '{:.2e}',
+                    'CI Width': '{:.1f}',
                 })
 
-                st.dataframe(styled, hide_index=True, use_container_width=True)
+                st.dataframe(styled, hide_index=True, use_container_width=True,
+                             height=min(len(display_df) * 38 + 40, 800))
+
+                # --- Charts (collapsed by default) ---
+                with st.expander("PRR Bar Chart (Top Adverse Events)", expanded=False):
+                    chart_df = display_df.sort_values(by='PRR', ascending=False).head(20).copy()
+                    fig, ax = plt.subplots(figsize=(8, max(3, len(chart_df) * 0.3)))
+                    bar_colors = ['#d32f2f' if s else '#757575' for s in chart_df['Signal']]
+                    y_pos = range(len(chart_df))
+                    ax.barh(y_pos, chart_df['PRR'], color=bar_colors)
+                    ax.set_yticks(y_pos)
+                    ax.set_yticklabels(chart_df['Adverse Event'].str[:35], fontsize=8)
+                    ax.invert_yaxis()
+                    ax.set_xlabel('PRR')
+                    ax.axvline(x=2, color='blue', linestyle='--', linewidth=0.8, alpha=0.6, label='PRR=2 threshold')
+                    ax.legend(fontsize=7)
+                    for i, (prr, n) in enumerate(zip(chart_df['PRR'], chart_df['Cases'])):
+                        ax.text(prr + 0.1, i, f'n={int(n)}', va='center', fontsize=7, color='#333333')
+                    ax.set_title(f'Signal Detection: {drug_name_display}', fontsize=10)
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+
+                if len(signals) > 10:
+                    with st.expander("Volcano Plot", expanded=False):
+                        fig = render_volcano_plot(signals, title=f"Signal Detection: {drug_name_display}")
+                        st.pyplot(fig)
+                        plt.close(fig)
 
                 # CSV download
                 csv = display_df.to_csv(index=False)
