@@ -7,6 +7,13 @@ adverse event reports. Hosted on HuggingFace Spaces.
 Modes:
   1. Single Drug Query — safety profile for one drug
   2. Drug Class Comparison — side-by-side signal comparison (e.g., VMAT2 inhibitors)
+
+DISCLAIMER: This tool is provided for educational and research purposes only.
+It is NOT intended for clinical decision-making, medical diagnosis, or treatment
+guidance. FAERS data reflects voluntary reports and does not establish causation.
+The authors and contributors accept no liability for any consequences arising
+from the use or misuse of this tool or its outputs. Always consult a qualified
+healthcare professional for medical decisions.
 """
 
 import os
@@ -1044,6 +1051,14 @@ def main():
 
     # --- Footer ---
     st.divider()
+    st.caption(
+        "**Disclaimer:** This tool is provided for educational and research purposes only. "
+        "It is NOT intended for clinical decision-making, medical diagnosis, or treatment guidance. "
+        "FAERS data reflects voluntary spontaneous reports and does not establish causation between "
+        "drugs and adverse events. The authors and contributors accept no liability for any "
+        "consequences arising from the use or misuse of this tool or its outputs. "
+        "Always consult a qualified healthcare professional for medical decisions."
+    )
     st.caption(
         "Data source: [FDA FAERS](https://www.fda.gov/drugs/fdas-adverse-event-reporting-system-faers). "
         "Methods: Proportional Reporting Ratio (PRR), Reporting Odds Ratio (ROR), Evans' criteria. "

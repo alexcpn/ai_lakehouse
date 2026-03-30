@@ -85,6 +85,25 @@ When a user references `lake_house_skill.md` or asks to build a data analysis ap
 
 Then build the standard stack: ETL script → Parquet → DuckDB → analysis engine → Streamlit UI → optional AI report layer. Use the FAERS tool (`python/faers_download.py`, `python/faers_analysis.py`, `app/app.py`) as the reference implementation.
 
+## Deployment
+
+### Git Remotes
+- **GitHub** (`origin`): `https://github.com/alexcpn/ai_lakehouse.git` — full repository
+- **HuggingFace Spaces** (`hfspaces`): `https://huggingface.co/spaces/alexcpn/faers-signal-detection` — contains only the `app/` contents (flat structure: `app.py`, `requirements.txt`, `Dockerfile`, `README.md`)
+
+### Pushing to HuggingFace Spaces
+The HF Spaces repo has a **different commit history** from GitHub (files were uploaded via `huggingface_hub`). Do NOT force-push the full repo. Instead:
+1. Clone the HF Spaces repo to a temp directory
+2. Copy updated files from `app/` into the clone
+3. Commit and push from the clone
+
+```bash
+# Example workflow
+cd /tmp && git clone https://huggingface.co/spaces/alexcpn/faers-signal-detection hf_update
+cp app/app.py /tmp/hf_update/app.py
+cd /tmp/hf_update && git add -A && git commit -m "description" && git push origin main
+```
+
 ## Key Data Constraints
 
 - FAERS is voluntary reporting — report counts ≠ incidence rates, signals ≠ causation
